@@ -72,7 +72,8 @@ class MaxPPO(Algorithm):
             env_func=lambda **kwargs: run_env_PPO(
                 policy=cloned_policy,
                 env_func=self.env_func,
-                **kwargs
+                max_steps=kwargs.get('max_steps', self.ppo_config['max_steps']),
+                gamma=kwargs.get('gamma', self.ppo_config['gamma'])
             ),
             **self.ppo_config
         )
