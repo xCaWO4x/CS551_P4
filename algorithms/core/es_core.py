@@ -159,7 +159,7 @@ class ESUpdater:
         """
         epsilons = []
         for i, (weight, current_weight) in enumerate(zip(weights, self.weights)):
-            diff = (weight - current_weight.data).cpu().numpy()
+            diff = (weight - current_weight.data).detach().cpu().numpy()
             epsilons.append(diff / self.sigma)
         return epsilons
 

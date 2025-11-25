@@ -57,7 +57,8 @@ class AltPPO(Algorithm):
             env_func=lambda **kwargs: run_env_PPO(
                 policy=policy,
                 env_func=env_func,
-                **kwargs
+                max_steps=kwargs.get('max_steps', max_steps),
+                gamma=kwargs.get('gamma', gamma)
             ),
             n_updates=n_updates,
             batch_size=batch_size,
@@ -102,7 +103,7 @@ class AltPPO(Algorithm):
             for weights in population:
                 epsilons = []
                 for i, (weight, current_weight) in enumerate(zip(weights, self.es_updater.weights)):
-                    diff = (weight - current_weight.data).cpu().numpy()
+                    diff = (weight - current_weight.data).detach().cpu().numpy()
                     epsilons.append(diff / self.es_updater.sigma)
                 epsilons_population.append(epsilons)
             
