@@ -1,0 +1,5 @@
+Algorithm: esppo
+Average final reward: -112.99
+Average time: 37.32s
+Trials: 1
+Results saved at: ./checkpoints/ESPPO_5_0.1_5_64_256_0.99_0.01_0.0_0.0001_0.001_1
