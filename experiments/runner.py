@@ -4,10 +4,28 @@ import pickle
 import numpy as np
 import torch
 import random
+import sys
 from typing import Dict, Any, Optional
 import matplotlib
 matplotlib.use('Agg')
 import matplotlib.pyplot as plt
+try:
+    from tqdm import tqdm
+    HAS_TQDM = True
+except ImportError:
+    HAS_TQDM = False
+    # Fallback: create a dummy tqdm class
+    class tqdm:
+        def __init__(self, *args, **kwargs):
+            pass
+        def update(self, n=1):
+            pass
+        def set_postfix(self, *args, **kwargs):
+            pass
+        def write(self, s):
+            print(s, flush=True)
+        def close(self):
+            pass
 from algorithms.base import Algorithm
 from metrics.tracker import MetricsTracker
 from experiments.registry import get_algorithm
@@ -47,6 +65,51 @@ class ExperimentRunner:
             metrics_tracker = MetricsTracker(save_dir=save_dir)
         self.metrics_tracker = metrics_tracker
     
+    def _save_intermediate_plot(self, iterations, rewards, trial_num, current_iter, final=False):
+        """Save intermediate plot during training."""
+        if not iterations or not rewards:
+            return
+        
+        try:
+            # Create trial-specific directory
+            trial_dir = os.path.join(self.save_dir, f'trial_{trial_num+1}_plots')
+            os.makedirs(trial_dir, exist_ok=True)
+            
+            # Create plot
+            plt.figure(figsize=(10, 6))
+            plt.plot(iterations, rewards, 'b-', alpha=0.7, label='Reward')
+            if len(rewards) > 1:
+                # Moving average
+                window = min(10, len(rewards) // 2)
+                if window > 1:
+                    moving_avg = np.convolve(rewards, np.ones(window)/window, mode='valid')
+                    moving_iter = iterations[window-1:]
+                    plt.plot(moving_iter, moving_avg, 'r-', linewidth=2, label=f'Moving avg ({window})')
+            
+            if self.reward_goal:
+                plt.axhline(y=self.reward_goal, color='g', linestyle='--', label='Goal')
+            
+            plt.xlabel('Iteration')
+            plt.ylabel('Reward')
+            plt.title(f'{self.algorithm_name.upper()} Trial {trial_num+1} - Iter {current_iter}')
+            plt.legend()
+            plt.grid(True, alpha=0.3)
+            plt.tight_layout()
+            
+            # Save plot
+            suffix = 'final' if final else f'iter_{current_iter}'
+            plot_path = os.path.join(trial_dir, f'rewards_{suffix}.png')
+            plt.savefig(plot_path, dpi=100)
+            plt.close()
+            
+            # Also save data
+            data_path = os.path.join(trial_dir, f'rewards_{suffix}.txt')
+            np.savetxt(data_path, np.column_stack([iterations, rewards]), 
+                      header='iteration reward', fmt='%d %.4f')
+        except Exception as e:
+            # Don't fail if plotting fails
+            pass
+    
     def run_trial(self, trial_num: int) -> Dict[str, Any]:
         """Run a single trial."""
         # Set seeds for reproducibility
@@ -73,8 +136,20 @@ class ExperimentRunner:
         consecutive_goal_count = 0
         iteration = 0
         eval_rewards = []
+        eval_iterations = []
         all_metrics = []
         
+        # Create progress bar with reward display
+        pbar = tqdm(
+            total=self.max_iterations,
+            desc=f'Trial {trial_num+1}/{self.n_trials}',
+            unit='iter',
+            file=sys.stdout,
+            ncols=120,
+            bar_format='{l_bar}{bar}| {n_fmt}/{total_fmt} [{elapsed}<{remaining}, {rate_fmt}] {postfix}'
+        )
+        
+        try:
         while iteration < self.max_iterations:
             # Training step
             metrics = algorithm.step()
@@ -92,18 +167,37 @@ class ExperimentRunner:
                     reward_only=True
                 )
                 eval_rewards.append(test_reward)
-                print(f'Trial {trial_num}, Iter {iteration+1}: reward = {test_reward:.2f}')
+                    eval_iterations.append(iteration + 1)
+                    
+                    # Update progress bar with reward info
+                    best_reward = max(eval_rewards) if eval_rewards else test_reward
+                    pbar.set_postfix({
+                        'reward': f'{test_reward:.2f}',
+                        'best': f'{best_reward:.2f}',
+                        'avg': f'{np.mean(eval_rewards[-10:]):.2f}' if len(eval_rewards) >= 10 else f'{np.mean(eval_rewards):.2f}'
+                    })
+                    
+                    # Also print to ensure it's logged (tqdm.write() goes above progress bar)
+                    pbar.write(f'Trial {trial_num+1}, Iter {iteration+1}: reward = {test_reward:.2f}, best = {best_reward:.2f}')
+                    
+                    # Save intermediate plot every 50 evaluations
+                    if len(eval_rewards) % 50 == 0 and self.save_dir:
+                        self._save_intermediate_plot(eval_iterations, eval_rewards, trial_num, iteration)
                 
                 # Check for early stopping
                 if self.reward_goal and test_reward >= self.reward_goal:
                     consecutive_goal_count += 1
                     if consecutive_goal_count >= self.consecutive_goal_max:
-                        print(f'Early stopping: reached goal {self.consecutive_goal_max} times')
+                            pbar.write(f'Early stopping: reached goal {self.consecutive_goal_max} times')
                         break
                 else:
                     consecutive_goal_count = 0
             
+                # Update progress bar each iteration
+                pbar.update(1)
             iteration += 1
+        finally:
+            pbar.close()
         
         end_time = time.time()
         elapsed_time = end_time - start_time
@@ -130,9 +224,10 @@ class ExperimentRunner:
         all_trial_results = []
         
         for trial in range(self.n_trials):
-            print(f'\n=== Trial {trial + 1}/{self.n_trials} ===')
+            print(f'\n=== Trial {trial + 1}/{self.n_trials} ===', flush=True)
             trial_result = self.run_trial(trial)
             all_trial_results.append(trial_result)
+            print(f'Trial {trial + 1} completed: final reward = {trial_result["final_reward"]:.2f}, time = {trial_result["elapsed_time"]:.2f}s', flush=True)
         
         # Aggregate results
         all_eval_rewards = [r['eval_rewards'] for r in all_trial_results]
@@ -197,10 +292,10 @@ class ExperimentRunner:
             f.write(f"Trials: {self.n_trials}\n")
             f.write(f"Results saved at: {exp_dir}\n")
         
-        print(f'\n=== Results ===')
-        print(f'Average final reward: {total_mean:.2f}')
-        print(f'Average time: {time_mean:.2f}s')
-        print(f'Results saved at: {exp_dir}')
+        print(f'\n=== Results ===', flush=True)
+        print(f'Average final reward: {total_mean:.2f}', flush=True)
+        print(f'Average time: {time_mean:.2f}s', flush=True)
+        print(f'Results saved at: {exp_dir}', flush=True)
         
         return {
             'rewards_mean': rewards_mean,

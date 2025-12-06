@@ -1,2 +1,43 @@
-PR_DESCRIPTION.md
-SLURM_SETUP.md
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+
+# Experiment results and checkpoints
+checkpoints/
+*.pkl
+*.png
+*.txt
+!requirements.txt
+!README.txt
+
+# SLURM output files
+slurm-*.out
+slurm-*.err
+*.out
+*.err
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Environment
+.env
+venv/
+env/
+ENV/
+
+# Jupyter
+.ipynb_checkpoints/
+
+# Test files (if any)
+test_*.sh

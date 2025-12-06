@@ -20,6 +20,15 @@ def parse_args():
     parser.add_argument('--lr', type=float, default=0.001) # TODO: delete
     parser.add_argument('--es_lr', type=float, default=0.001)
     parser.add_argument('--ppo_lr', type=float, default=0.0001)
+    
+    # CMA-PPO specific arguments
+    parser.add_argument('--lam', type=float, default=0.95, help='GAE lambda parameter')
+    parser.add_argument('--cma_lr_mean', type=float, default=3e-4, help='CMA-PPO mean network learning rate')
+    parser.add_argument('--cma_lr_var', type=float, default=3e-4, help='CMA-PPO variance network learning rate')
+    parser.add_argument('--cma_lr_value', type=float, default=1e-3, help='CMA-PPO value network learning rate')
+    parser.add_argument('--history_size', type=int, default=5, help='CMA-PPO history buffer size (H)')
+    parser.add_argument('--kernel_std', type=float, default=0.1, help='CMA-PPO Gaussian kernel std for mirroring')
+    
     parser.add_argument('--n_trials', type=int, default=5)
     parser.add_argument('--seed', type=int, default=1234)
     parser.add_argument('--n_seq', type=int, default=1)

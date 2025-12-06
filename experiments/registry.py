@@ -1,5 +1,6 @@
 from algorithms.standalone.ppo import PPO
 from algorithms.standalone.es import ES
+from algorithms.standalone.cma_ppo import CMA_PPO
 from algorithms.hybrid.es_ppo import ESPPO
 from algorithms.hybrid.max_ppo import MaxPPO
 from algorithms.hybrid.alt_ppo import AltPPO
@@ -7,6 +8,8 @@ from algorithms.hybrid.alt_ppo import AltPPO
 ALGORITHM_REGISTRY = {
     'ppo': PPO,
     'es': ES,
+    'cma_ppo': CMA_PPO,
+    'cmappo': CMA_PPO,
     'esppo': ESPPO,
     'maxppo': MaxPPO,
     'altppo': AltPPO,

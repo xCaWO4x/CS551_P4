@@ -1,5 +1,0 @@
-Algorithm: ppo
-Average final reward: -111.91
-Average time: 2.77s
-Trials: 1
-Results saved at: ./checkpoints/PPO_5_64_256_0.99_0.01_0.0_0.0001
