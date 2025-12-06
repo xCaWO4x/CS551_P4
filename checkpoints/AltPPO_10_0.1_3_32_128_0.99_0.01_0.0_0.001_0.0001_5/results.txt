@@ -1,0 +1,5 @@
+Algorithm: altppo
+Average final reward: -97.71
+Average time: 18.22s
+Trials: 1
+Results saved at: ./checkpoints/AltPPO_10_0.1_3_32_128_0.99_0.01_0.0_0.001_0.0001_5

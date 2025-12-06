@@ -62,7 +62,6 @@ class PPOUpdater:
         for _ in range(n_sequences):
             # Collect trajectories
             states, actions, rewards, values, logprobs, returns = self.env_func(
-                policy=self.policy,
                 max_steps=self.max_steps,
                 gamma=self.gamma
             )
