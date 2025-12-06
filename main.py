@@ -3,11 +3,16 @@ matplotlib.use('Agg')
 from functools import partial
 import logging
 import os
+import sys
 import gymnasium as gym
 import numpy as np
 from gymnasium import logger as gym_logger
 import random
 import torch
+
+# Ensure unbuffered output for SLURM (flush after each print)
+if hasattr(sys.stdout, 'reconfigure'):
+    sys.stdout.reconfigure(line_buffering=True)
 
 # New modular imports
 from policies import get_policy
@@ -127,6 +132,19 @@ def main():
             'es_learning_rate': args.es_lr,
             'ppo_learning_rate': args.ppo_lr,
             'threadcount': args.population_size
+        }
+    elif args.alg.upper() in ['CMA_PPO', 'CMAPPO']:
+        algorithm_config = {
+            'n_updates': args.n_updates,
+            'batch_size': args.batch_size,
+            'max_steps': args.max_steps,
+            'gamma': args.gamma,
+            'lam': args.lam if hasattr(args, 'lam') else 0.95,
+            'lr_mean': args.cma_lr_mean if hasattr(args, 'cma_lr_mean') else 3e-4,
+            'lr_var': args.cma_lr_var if hasattr(args, 'cma_lr_var') else 3e-4,
+            'lr_value': args.cma_lr_value if hasattr(args, 'cma_lr_value') else 1e-3,
+            'history_size': args.history_size if hasattr(args, 'history_size') else 5,
+            'kernel_std': args.kernel_std if hasattr(args, 'kernel_std') else 0.1
         }
     else:
         raise ValueError(f"Unknown algorithm: {args.alg}")
