@@ -7,17 +7,22 @@ __pycache__/
 
 # Experiment results and checkpoints
 checkpoints/
+independent_trials_*/
 *.pkl
 *.png
 *.txt
 !requirements.txt
 !README.txt
+!ALGORITHM_COMPARISON.md
+!CONFIGURATION_AND_FAIRNESS.md
 
 # SLURM output files
 slurm-*.out
 slurm-*.err
 *.out
 *.err
+*.log
+extract_max_policies.log
 
 # IDE
 .vscode/
