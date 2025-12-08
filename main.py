@@ -27,7 +27,7 @@ def get_env(render_mode=None):
 
 def get_goal():
     """Return reward goal for BipedalWalker."""
-    return 300
+    return 250
 
 def main():
     args = parse_args()

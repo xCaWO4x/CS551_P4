@@ -325,50 +325,59 @@ class CMA_PPOUpdater:
                 states, actions_pre_tanh, advantages, returns_gae, current_means
             )
             
-            # Multiple update epochs
+            # Prepare history data for variance network (once per iteration, not per epoch)
+            all_hist_states = None
+            all_hist_actions = None
+            all_hist_advantages = None
+            if len(self.history_buffer) > 0:
+                # Collect all history data
+                hist_states_list = []
+                hist_actions_list = []
+                hist_advantages_list = []
+                
+                for hist_data in self.history_buffer:
+                    hist_states = hist_data['states']
+                    hist_actions = hist_data['actions_pre_tanh']
+                    hist_advantages = hist_data['advantages']
+                    
+                    # Get current means for history states
+                    with torch.no_grad():
+                        hist_states_tensor = to_var(hist_states)
+                        hist_means, _ = self.policy.get_mean_var(hist_states_tensor)
+                        hist_means = hist_means.cpu().numpy()
+                    
+                    # Build CMA batch for this history entry
+                    h_states, h_actions, h_advantages, _ = self.build_cma_batch(
+                        hist_states, hist_actions, hist_advantages,
+                        hist_data['returns'], hist_means
+                    )
+                    
+                    if len(h_states) > 0:
+                        hist_states_list.append(h_states)
+                        hist_actions_list.append(h_actions)
+                        hist_advantages_list.append(h_advantages)
+                
+                if len(hist_states_list) > 0:
+                    # Concatenate all history
+                    all_hist_states = np.concatenate(hist_states_list, axis=0)
+                    all_hist_actions = np.concatenate(hist_actions_list, axis=0)
+                    all_hist_advantages = np.concatenate(hist_advantages_list, axis=0)
+            
+            # Multiple update epochs with minibatch iteration
             for update in range(self.n_updates):
                 # ===== Update Variance Network (using history data) =====
-                if len(self.history_buffer) > 0:
-                    # Collect all history data
-                    hist_states_list = []
-                    hist_actions_list = []
-                    hist_advantages_list = []
+                if all_hist_states is not None and len(all_hist_states) > 0:
+                    # Iterate through minibatches of history data
+                    hist_sampler = BatchSampler(
+                        SubsetRandomSampler(list(range(len(all_hist_states)))),
+                        batch_size=self.batch_size,
+                        drop_last=False
+                    )
                     
-                    for hist_data in self.history_buffer:
-                        hist_states = hist_data['states']
-                        hist_actions = hist_data['actions_pre_tanh']
-                        hist_advantages = hist_data['advantages']
-                        
-                        # Get current means for history states
-                        with torch.no_grad():
-                            hist_states_tensor = to_var(hist_states)
-                            hist_means, _ = self.policy.get_mean_var(hist_states_tensor)
-                            hist_means = hist_means.cpu().numpy()
-                        
-                        # Build CMA batch for this history entry
-                        h_states, h_actions, h_advantages, _ = self.build_cma_batch(
-                            hist_states, hist_actions, hist_advantages,
-                            hist_data['returns'], hist_means
-                        )
-                        
-                        if len(h_states) > 0:
-                            hist_states_list.append(h_states)
-                            hist_actions_list.append(h_actions)
-                            hist_advantages_list.append(h_advantages)
-                    
-                    if len(hist_states_list) > 0:
-                        # Concatenate all history
-                        all_hist_states = np.concatenate(hist_states_list, axis=0)
-                        all_hist_actions = np.concatenate(hist_actions_list, axis=0)
-                        all_hist_advantages = np.concatenate(hist_advantages_list, axis=0)
-                        
-                        # Sample minibatches from history
-                        n_samples = min(len(all_hist_states), self.batch_size)
-                        indices = np.random.choice(len(all_hist_states), size=n_samples, replace=False)
-                        
-                        sampled_states = to_var(all_hist_states[indices])
-                        sampled_actions = to_var(all_hist_actions[indices])
-                        sampled_advantages = to_var(all_hist_advantages[indices])
+                    for hist_indices in hist_sampler:
+                        sampled_states = to_var(all_hist_states[hist_indices])
+                        sampled_actions = to_var(all_hist_actions[hist_indices])
+                        sampled_advantages = to_var(all_hist_advantages[hist_indices])
                         
                         # Get mean and variance
                         mean_pred, var_pred = self.policy.get_mean_var(sampled_states)
@@ -387,48 +396,56 @@ class CMA_PPOUpdater:
                 
                 # ===== Update Mean Network (using current iteration only) =====
                 if len(cma_states) > 0 and len(cma_actions) > 0:
-                    # Sample minibatch from current CMA batch
-                    n_samples = min(len(cma_states), self.batch_size)
-                    indices = np.random.choice(len(cma_states), size=n_samples, replace=False)
+                    # Iterate through minibatches of CMA batch
+                    cma_sampler = BatchSampler(
+                        SubsetRandomSampler(list(range(len(cma_states)))),
+                        batch_size=self.batch_size,
+                        drop_last=False
+                    )
                     
-                    sampled_states = to_var(cma_states[indices])
-                    sampled_actions = to_var(cma_actions[indices])
-                    sampled_advantages = to_var(cma_advantages[indices])
-                    sampled_returns = to_var(cma_returns[indices])
-                    
-                    # Get mean and variance
-                    mean_pred, var_pred = self.policy.get_mean_var(sampled_states)
-                    dist = torch.distributions.Normal(mean_pred, var_pred)
-                    
-                    # Mean loss: -A * log_prob (unclipped, weighted by advantages)
-                    log_prob = dist.log_prob(sampled_actions).sum(dim=1)
-                    mean_loss = -(sampled_advantages.view(-1) * log_prob).mean()
-                    
-                    # Update mean network
-                    self.optimizer_mean.zero_grad()
-                    mean_loss.backward()
-                    self.optimizer_mean.step()
-                    
-                    all_metrics['mean_loss'].append(mean_loss.item())
+                    for cma_indices in cma_sampler:
+                        sampled_states = to_var(cma_states[cma_indices])
+                        sampled_actions = to_var(cma_actions[cma_indices])
+                        sampled_advantages = to_var(cma_advantages[cma_indices])
+                        sampled_returns = to_var(cma_returns[cma_indices])
+                        
+                        # Get mean and variance
+                        mean_pred, var_pred = self.policy.get_mean_var(sampled_states)
+                        dist = torch.distributions.Normal(mean_pred, var_pred)
+                        
+                        # Mean loss: -A * log_prob (unclipped, weighted by advantages)
+                        log_prob = dist.log_prob(sampled_actions).sum(dim=1)
+                        mean_loss = -(sampled_advantages.view(-1) * log_prob).mean()
+                        
+                        # Update mean network
+                        self.optimizer_mean.zero_grad()
+                        mean_loss.backward()
+                        self.optimizer_mean.step()
+                        
+                        all_metrics['mean_loss'].append(mean_loss.item())
                 
                 # ===== Update Value Network (using current iteration) =====
-                # Sample minibatch from current iteration
-                n_samples = min(len(states), self.batch_size)
-                indices = np.random.choice(len(states), size=n_samples, replace=False)
+                # Iterate through minibatches of current iteration data
+                value_sampler = BatchSampler(
+                    SubsetRandomSampler(list(range(len(states)))),
+                    batch_size=self.batch_size,
+                    drop_last=False
+                )
                 
-                sampled_states = to_var(states[indices])
-                sampled_returns = to_var(returns_gae[indices])
-                
-                # Value loss
-                value_pred = self.policy.vf(sampled_states).squeeze()
-                value_loss = F.mse_loss(value_pred, sampled_returns)
-                
-                # Update value network
-                self.optimizer_value.zero_grad()
-                value_loss.backward()
-                self.optimizer_value.step()
-                
-                all_metrics['value_loss'].append(value_loss.item())
+                for value_indices in value_sampler:
+                    sampled_states = to_var(states[value_indices])
+                    sampled_returns = to_var(returns_gae[value_indices])
+                    
+                    # Value loss
+                    value_pred = self.policy.vf(sampled_states).squeeze()
+                    value_loss = F.mse_loss(value_pred, sampled_returns)
+                    
+                    # Update value network
+                    self.optimizer_value.zero_grad()
+                    value_loss.backward()
+                    self.optimizer_value.step()
+                    
+                    all_metrics['value_loss'].append(value_loss.item())
             
             # Store advantage stats
             all_metrics['advantage_mean'].append(advantages_mean)
