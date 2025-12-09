@@ -13,6 +13,7 @@ def parse_args():
     parser.add_argument('--file_4', type=str, default="", help='The location of the saved GAN.')
     parser.add_argument('--file_5', type=str, default="", help='The location of the saved GAN.')
     parser.add_argument('--save_dir', type=str, default="", help='The location of the saved GAN.')
+    parser.add_argument('--eval_interval', type=int, default=1, help='Spacing (iterations) between evaluations; used to scale x-axis.')
 
     return parser.parse_args()
     
@@ -40,11 +41,18 @@ def main():
                       '#98df8a', '#d62728', '#ff9896', '#9467bd', '#c5b0d5',
                       '#8c564b', '#c49c94', '#e377c2', '#f7b6d2', '#7f7f7f',
                       '#c7c7c7', '#bcbd22', '#dbdb8d', '#17becf', '#9edae5']
-    line1, = plt.plot(np.arange(len(rewards_1)), rewards_1, col[1], label='trial 1')
-    line2, = plt.plot(np.arange(len(rewards_2)), rewards_2, col[2], label='trial 2')
-    line2, = plt.plot(np.arange(len(rewards_3)), rewards_3, col[3], label='trial 3')
-    line2, = plt.plot(np.arange(len(rewards_4)), rewards_4, col[4], label='trial 4')
-    line2, = plt.plot(np.arange(len(rewards_5)), rewards_5, col[5], label='trial 5')
+    # Scale x-axis by eval_interval so ticks reflect training iterations
+    x1 = np.arange(len(rewards_1)) * args.eval_interval
+    x2 = np.arange(len(rewards_2)) * args.eval_interval
+    x3 = np.arange(len(rewards_3)) * args.eval_interval
+    x4 = np.arange(len(rewards_4)) * args.eval_interval
+    x5 = np.arange(len(rewards_5)) * args.eval_interval
+
+    line1, = plt.plot(x1, rewards_1, col[1], label='trial 1')
+    line2, = plt.plot(x2, rewards_2, col[2], label='trial 2')
+    line2, = plt.plot(x3, rewards_3, col[3], label='trial 3')
+    line2, = plt.plot(x4, rewards_4, col[4], label='trial 4')
+    line2, = plt.plot(x5, rewards_5, col[5], label='trial 5')
 
     plt.legend(loc=4)
     plt.grid(True)

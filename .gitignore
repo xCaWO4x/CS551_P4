@@ -8,13 +8,16 @@ __pycache__/
 # Experiment results and checkpoints
 checkpoints/
 independent_trials_*/
+cma_ppo_adaptive_trials_*/
 *.pkl
 *.png
 *.txt
 !requirements.txt
 !README.txt
-!ALGORITHM_COMPARISON.md
-!CONFIGURATION_AND_FAIRNESS.md
+
+# Archive and old results
+archive/
+old_results/
 
 # SLURM output files
 slurm-*.out
@@ -22,7 +25,6 @@ slurm-*.err
 *.out
 *.err
 *.log
-extract_max_policies.log
 
 # IDE
 .vscode/
@@ -43,6 +45,3 @@ ENV/
 
 # Jupyter
 .ipynb_checkpoints/
-
-# Test files (if any)
-test_*.sh

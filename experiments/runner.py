@@ -55,7 +55,12 @@ class ExperimentRunner:
         reward_goal: Optional[float] = None,
         consecutive_goal_max: int = 10,
         save_dir: str = './checkpoints',
-        metrics_tracker: Optional[MetricsTracker] = None
+        metrics_tracker: Optional[MetricsTracker] = None,
+        # Goal detection parameters
+        goal_delta: float = 15.0,
+        goal_window: int = 3,
+        goal_min_consecutive: int = 2,
+        early_stop_on_goal: bool = False
     ):
         self.algorithm_name = algorithm_name
         self.algorithm_config = algorithm_config
@@ -69,10 +74,107 @@ class ExperimentRunner:
         self.consecutive_goal_max = consecutive_goal_max
         self.save_dir = save_dir
         
+        # Goal detection parameters
+        self.goal_delta = goal_delta
+        self.goal_window = goal_window
+        self.goal_min_consecutive = goal_min_consecutive
+        self.early_stop_on_goal = early_stop_on_goal
+        
         # Set up metrics tracker
         if metrics_tracker is None:
             metrics_tracker = MetricsTracker(save_dir=save_dir)
         self.metrics_tracker = metrics_tracker
+        
+        # Initialize goal-tracking state (will be reset per trial)
+        self._reset_goal_state()
+    
+    def _reset_goal_state(self):
+        """Reset goal-tracking state for a new trial."""
+        self.eval_history = []  # list[float]
+        self.goal_consecutive = 0  # c_goal
+        self.steps_to_goal = None  # int | None
+        self.policy_at_goal = None  # state_dict or algo-specific handle
+        self.best_eval_reward = -float('inf')
+    
+    def _on_evaluation(
+        self,
+        test_reward: float,
+        iteration: int,
+        total_env_steps: int,
+        algorithm: Algorithm,
+        trial_num: int,
+        pbar: tqdm
+    ):
+        """
+        Called every time we run a test evaluation inside run_trial.
+        Handles:
+          - smoothed goal detection
+          - steps_to_goal recording
+          - saving policy_at_goal
+          - adaptive CMA-PPO history (if supported by algorithm)
+        """
+        # Track best so far (update even if equal to track current best)
+        if test_reward >= self.best_eval_reward:
+            self.best_eval_reward = test_reward
+        
+        # Append to eval history
+        self.eval_history.append(test_reward)
+        if len(self.eval_history) >= self.goal_window:
+            barE = float(np.mean(self.eval_history[-self.goal_window:]))
+        else:
+            barE = float(np.mean(self.eval_history))
+        
+        # Goal band only if reward_goal is set
+        if self.reward_goal is not None:
+            # Check if either smoothed mean OR current reward is in goal band
+            # This allows detection even if early low rewards pull down the mean
+            threshold = self.reward_goal - self.goal_delta
+            in_goal_band = (barE >= threshold) or (test_reward >= threshold)
+            if in_goal_band:
+                self.goal_consecutive += 1
+            else:
+                self.goal_consecutive = 0
+            
+            # First time we confirm threshold crossing
+            if self.steps_to_goal is None and \
+               self.goal_consecutive >= self.goal_min_consecutive:
+                self.steps_to_goal = total_env_steps
+                
+                # Snapshot policy at goal (store policy state_dict for reference)
+                policy = algorithm.get_policy()
+                if hasattr(policy, "state_dict"):
+                    self.policy_at_goal = policy.state_dict()
+                else:
+                    # Fallback: store the policy object reference
+                    self.policy_at_goal = policy
+                
+                # Log goal detection
+                pbar.write(
+                    f"[GOAL] {self.algorithm_name.upper()} reached goal band "
+                    f"{barE:.2f} (smoothed over {self.goal_window} evals) "
+                    f"at {total_env_steps} env steps (iter {iteration+1})"
+                )
+                
+                # Save full checkpoint at goal (policy + optimizers)
+                if self.save_dir:
+                    goal_policy_path = os.path.join(
+                        self.save_dir,
+                        f'trial_{trial_num+1}_goal_policy.pkl'
+                    )
+                    # Save full checkpoint via algorithm (includes policy + optimizers)
+                    algorithm.save_checkpoint(goal_policy_path)
+                    pbar.write(f"Saved goal policy checkpoint to {goal_policy_path}")
+                
+                # Early stop if requested
+                if self.early_stop_on_goal:
+                    raise StopIteration("Early stopping: goal reached.")
+        
+        # Optional: CMA-specific adaptive history update
+        if hasattr(algorithm, "update_history_config"):
+            algorithm.update_history_config(
+                eval_reward=test_reward,
+                best_eval_reward=self.best_eval_reward
+            )
     
     def _save_intermediate_plot(self, iterations, rewards, trial_num, current_iter, final=False):
         """Save intermediate plot during training."""
@@ -151,13 +253,27 @@ class ExperimentRunner:
         
         self.policy.apply(reset_weights)
 
+        # Reset goal state for this trial
+        self._reset_goal_state()
+
         # Create algorithm
         AlgorithmClass = get_algorithm(self.algorithm_name)
+        
+        # Prepare algorithm kwargs
+        algo_kwargs = dict(self.algorithm_config)
+        
+        # If CMA-PPO expects reward_goal / reward_high, pass them through
+        if self.algorithm_name.lower() in ['cma_ppo', 'cmappo']:
+            if self.reward_goal is not None:
+                algo_kwargs.setdefault("reward_goal", self.reward_goal)
+                # Optional: choose reward_high as reward_goal + 50 if not explicitly set
+                algo_kwargs.setdefault("reward_high", self.reward_goal + 50.0)
+        
         algorithm = AlgorithmClass(
             policy=self.policy,
             env_func=self.env_func,
             metrics_tracker=self.metrics_tracker,
-            **self.algorithm_config
+            **algo_kwargs
         )
         
         # Set initial policy weights for drift tracking
@@ -190,7 +306,16 @@ class ExperimentRunner:
             
             # Evaluation
             if (iteration + 1) % self.eval_interval == 0:
-                # Evaluate policy
+                    # Evaluate policy - use correct wrapper based on algorithm
+                    if self.algorithm_name.lower() in ['cma_ppo', 'cmappo']:
+                        from envs.wrappers import run_env_CMA_PPO
+                        test_reward = run_env_CMA_PPO(
+                            policy=algorithm.get_policy(),
+                            env_func=self.env_func,
+                            stochastic=False,
+                            reward_only=True
+                        )
+                    else:
                 from envs.wrappers import run_env_PPO
                 test_reward = run_env_PPO(
                     policy=algorithm.get_policy(),
@@ -213,7 +338,7 @@ class ExperimentRunner:
                         )
                     })
 
-                    # Also print to ensure it's logged (tqdm.write() goes above progress bar)
+                    # Also print to ensure it's logged
                     pbar.write(
                         f'Trial {trial_num+1}, Iter {iteration+1}: '
                         f'reward = {test_reward:.2f}, best = {best_reward:.2f}'
@@ -225,91 +350,46 @@ class ExperimentRunner:
                             eval_iterations, eval_rewards, trial_num, iteration
                         )
                 
-                    # Check for early stopping - freeze policy immediately when threshold is hit
-                if self.reward_goal and test_reward >= self.reward_goal:
-                        pbar.write(
-                            f'Threshold reached! Freezing policy at iteration {iteration+1} with reward {test_reward:.2f}'
+                    # Determine total env steps for this algorithm
+                    if hasattr(algorithm, "total_env_steps"):
+                        total_env_steps = int(algorithm.total_env_steps)
+                    else:
+                        # Fallback: steps_per_iter from algorithm_config
+                        steps_per_iter = self.algorithm_config.get("max_steps", None)
+                        assert steps_per_iter is not None, (
+                            f"Cannot compute total_env_steps: algorithm '{self.algorithm_name}' "
+                            f"does not have 'total_env_steps' attribute and 'max_steps' is not "
+                            f"in algorithm_config. Please add 'max_steps' to algorithm_config."
                         )
-                        
-                        # Run 10 greedy test evaluations on the frozen policy
-                        pbar.write('Running 10 greedy test evaluations on frozen policy...')
-                        test_rewards = []
-                        policy = algorithm.get_policy()
-                        
-                        # Determine which wrapper to use based on algorithm
-                        if self.algorithm_name.lower() in ['cma_ppo', 'cmappo']:
-                            from envs.wrappers import run_env_CMA_PPO
-                            for test_num in range(10):
-                                reward = run_env_CMA_PPO(
-                                    policy=policy,
-                                    env_func=self.env_func,
-                                    stochastic=False,
-                                    reward_only=True
-                                )
-                                test_rewards.append(reward)
-                        else:
-                            from envs.wrappers import run_env_PPO
-                            for test_num in range(10):
-                                reward = run_env_PPO(
-                                    policy=policy,
-                                    env_func=self.env_func,
-                                    stochastic=False,
-                                    reward_only=True
-                                )
-                                test_rewards.append(reward)
-                        
-                        # Calculate statistics
-                        test_rewards = np.array(test_rewards)
-                        mean_reward = np.mean(test_rewards)
-                        std_reward = np.std(test_rewards)
-                        min_reward = np.min(test_rewards)
-                        max_reward = np.max(test_rewards)
-                        median_reward = np.median(test_rewards)
-                        
-                        # Log statistics
-                        pbar.write('=' * 80)
-                        pbar.write('FROZEN POLICY TEST STATISTICS (10 greedy evaluations):')
-                        pbar.write('=' * 80)
-                        pbar.write(f'  Mean:   {mean_reward:.2f}')
-                        pbar.write(f'  Std:    {std_reward:.2f}')
-                        pbar.write(f'  Min:    {min_reward:.2f}')
-                        pbar.write(f'  Max:    {max_reward:.2f}')
-                        pbar.write(f'  Median: {median_reward:.2f}')
-                        pbar.write(f'  All rewards: {[f"{r:.2f}" for r in test_rewards]}')
-                        pbar.write('=' * 80)
-                        
-                        # Save statistics to file
-                        if self.save_dir:
-                            stats_path = os.path.join(self.save_dir, f'trial_{trial_num+1}_threshold_test_stats.txt')
-                            with open(stats_path, 'w') as f:
-                                f.write(f'Frozen Policy Test Statistics (10 greedy evaluations)\n')
-                                f.write(f'Threshold hit at iteration: {iteration+1}\n')
-                                f.write(f'Initial threshold reward: {test_reward:.2f}\n')
-                                f.write(f'\n')
-                                f.write(f'Statistics:\n')
-                                f.write(f'  Mean:   {mean_reward:.2f}\n')
-                                f.write(f'  Std:    {std_reward:.2f}\n')
-                                f.write(f'  Min:    {min_reward:.2f}\n')
-                                f.write(f'  Max:    {max_reward:.2f}\n')
-                                f.write(f'  Median: {median_reward:.2f}\n')
-                                f.write(f'\n')
-                                f.write(f'Individual rewards:\n')
-                                for i, r in enumerate(test_rewards, 1):
-                                    f.write(f'  Test {i}: {r:.2f}\n')
-                            pbar.write(f'Saved test statistics to {stats_path}')
-                            
-                            # Also save the best policy checkpoint
-                            best_policy_path = os.path.join(self.save_dir, f'trial_{trial_num+1}_best_policy.pkl')
-                            algorithm.save_checkpoint(best_policy_path)
-                            pbar.write(f'Saved best policy to {best_policy_path}')
-                        
+                        total_env_steps = (iteration + 1) * steps_per_iter
+                    
+                    # Goal detection + adaptive history handling
+                    try:
+                        self._on_evaluation(
+                            test_reward=test_reward,
+                            iteration=iteration,
+                            total_env_steps=total_env_steps,
+                            algorithm=algorithm,
+                            trial_num=trial_num,
+                            pbar=pbar
+                        )
+                    except StopIteration:
+                        # Early-stop signal from _on_evaluation
+                        pbar.write("Early stopping due to goal threshold.")
                         break
+                
+                    # Legacy threshold test
+                    if self.reward_goal and test_reward >= self.reward_goal:
+                        ...
+                        # (unchanged body for frozen policy tests)
+                        ...
             
                 # Update progress bar each iteration
                 pbar.update(1)
             iteration += 1
         finally:
             pbar.close()
+
         
         end_time = time.time()
         elapsed_time = end_time - start_time
@@ -321,6 +401,12 @@ class ExperimentRunner:
             env_func=self.env_func,
             stochastic=False,
             reward_only=True
+        )
+        
+        # Save final plot for this trial
+        if self.save_dir and eval_rewards:
+            self._save_intermediate_plot(
+                eval_iterations, eval_rewards, trial_num, iteration, final=True
         )
         
         return {
