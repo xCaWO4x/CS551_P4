@@ -54,7 +54,31 @@ class CMA_PPOUpdater:
         self.optimizer_value = optim.Adam(self.policy.vf.parameters(), lr=self.lr_value)
         
         # History buffer: stores (states, actions_pre_tanh, advantages, returns) for last H iterations
+        self.history_size = history_size
         self.history_buffer = deque(maxlen=history_size)
+    
+    def set_history_size(self, new_size: int):
+        """
+        Resize history buffer to new size, preserving recent entries.
+        
+        Args:
+            new_size: New maximum size for history buffer (must be >= 1)
+        """
+        # Safety checks
+        if new_size < 1:
+            raise ValueError(f"History size must be >= 1, got {new_size}")
+        
+        if not hasattr(self, 'history_buffer') or self.history_buffer is None:
+            # Initialize if not already initialized
+            self.history_buffer = deque(maxlen=new_size)
+            self.history_size = new_size
+            return
+        
+        # Resize existing buffer
+        old_buffer = list(self.history_buffer)
+        self.history_size = new_size
+        # Create new deque with new maxlen, keeping only the most recent entries
+        self.history_buffer = deque(old_buffer[-new_size:], maxlen=new_size)
     
     def compute_gae(self, rewards, values, masks, last_value):
         """

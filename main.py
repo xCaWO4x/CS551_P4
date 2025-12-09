@@ -144,7 +144,9 @@ def main():
             'lr_var': args.cma_lr_var if hasattr(args, 'cma_lr_var') else 3e-4,
             'lr_value': args.cma_lr_value if hasattr(args, 'cma_lr_value') else 1e-3,
             'history_size': args.history_size if hasattr(args, 'history_size') else 5,
-            'kernel_std': args.kernel_std if hasattr(args, 'kernel_std') else 0.1
+            'kernel_std': args.kernel_std if hasattr(args, 'kernel_std') else 0.1,
+            'history_len_min': args.history_len_min if hasattr(args, 'history_len_min') else 1,
+            'reward_high': args.reward_high if hasattr(args, 'reward_high') else None
         }
     else:
         raise ValueError(f"Unknown algorithm: {args.alg}")
@@ -165,7 +167,12 @@ def main():
         reward_goal=reward_goal,
         consecutive_goal_max=10,
         save_dir=args.directory,
-        metrics_tracker=metrics_tracker
+        metrics_tracker=metrics_tracker,
+        # Goal detection parameters
+        goal_delta=args.goal_delta if hasattr(args, 'goal_delta') else 15.0,
+        goal_window=args.goal_window if hasattr(args, 'goal_window') else 3,
+        goal_min_consecutive=args.goal_min_consecutive if hasattr(args, 'goal_min_consecutive') else 2,
+        early_stop_on_goal=args.early_stop_on_goal if hasattr(args, 'early_stop_on_goal') else False
     )
     
     results = runner.run()

@@ -1,6 +1,7 @@
 import copy
 import torch
-from typing import Dict, Any, Callable
+import numpy as np
+from typing import Dict, Any, Callable, Optional
 from algorithms.base import Algorithm
 from algorithms.core.cma_ppo_core import CMA_PPOUpdater
 from envs.wrappers import run_env_CMA_PPO
@@ -22,11 +23,30 @@ class CMA_PPO(Algorithm):
         lr_value: float = 1e-3,
         history_size: int = 5,
         kernel_std: float = 0.1,
-        metrics_tracker=None
+        metrics_tracker=None,
+        # Adaptive history parameters
+        history_len_min: int = 1,
+        reward_goal: Optional[float] = None,
+        reward_high: Optional[float] = None
     ):
         self.policy = policy
         self.env_func = env_func
         self.metrics_tracker = metrics_tracker
+        
+        # Adaptive history configuration
+        self.H_max = history_size
+        self.H_min = history_len_min
+        self.H = self.H_max
+        
+        # Use reward_goal if passed explicitly, otherwise None
+        self.reward_goal = reward_goal
+        # Higher confidence band; default: goal + 50 if not provided
+        self.reward_high = reward_high if reward_high is not None else (
+            self.reward_goal + 50.0 if self.reward_goal is not None else None
+        )
+        
+        # Track best evaluation reward for adaptive history
+        self.best_eval_reward = -float('inf')
         
         # Create CMA-PPO updater
         self.cma_ppo_updater = CMA_PPOUpdater(
@@ -86,6 +106,70 @@ class CMA_PPO(Algorithm):
             self.cma_ppo_updater.optimizer_var.load_state_dict(checkpoint['optimizer_var_state_dict'])
         if 'optimizer_value_state_dict' in checkpoint:
             self.cma_ppo_updater.optimizer_value.load_state_dict(checkpoint['optimizer_value_state_dict'])
+    
+    def update_history_config(
+        self,
+        eval_reward: float,
+        best_eval_reward: Optional[float] = None
+    ):
+        """
+        Called by ExperimentRunner after each evaluation.
+        Adjusts history length H based on performance.
+        
+        Strategy:
+        - Pre-goal (R_best <= R_goal): H = H_max (longer history, more exploration)
+        - Post-goal (R_best >= R_high): H = H_min (shorter history, stabilize)
+        - In-between: Linear interpolation between H_max and H_min
+        
+        Args:
+            eval_reward: Current evaluation reward
+            best_eval_reward: Best evaluation reward seen so far (optional)
+        """
+        # Guard against None values
+        if self.reward_goal is None or self.reward_high is None:
+            return
+        
+        # Guard against invalid configuration (division by zero in interpolation)
+        if self.reward_high <= self.reward_goal:
+            return
+        
+        # Ensure cma_ppo_updater exists
+        if not hasattr(self, 'cma_ppo_updater') or self.cma_ppo_updater is None:
+            return
+        
+        # Update internal best tracker with explicit None checks
+        if best_eval_reward is not None:
+            self.best_eval_reward = max(self.best_eval_reward, best_eval_reward)
+        elif eval_reward is not None:
+            self.best_eval_reward = max(self.best_eval_reward, eval_reward)
+        else:
+            return  # Both are None, cannot proceed
+        
+        # Use self.* directly for clarity and to avoid variable shadowing
+        # Compute new H based on self.best_eval_reward
+        if self.best_eval_reward <= self.reward_goal:
+            new_H = self.H_max
+        elif self.best_eval_reward >= self.reward_high:
+            new_H = self.H_min
+        else:
+            # Linear interpolation: R_goal -> H_max, R_high -> H_min
+            # Safe from division by zero due to guard above
+            alpha = (self.reward_high - self.best_eval_reward) / (self.reward_high - self.reward_goal)  # in (0,1)
+            new_H = int(np.ceil(self.H_min + (self.H_max - self.H_min) * alpha))
+        
+        new_H = max(self.H_min, min(self.H_max, new_H))
+        
+        if new_H != self.H:
+            # Resize history buffer in updater
+            self.H = new_H
+            self.cma_ppo_updater.set_history_size(new_H)
+            
+            # Optional: print debug
+            print(
+                f"[CMA-PPO] Adjusted history length H to {self.H} "
+                f"(R_best={self.best_eval_reward:.2f}, goal={self.reward_goal:.2f}, high={self.reward_high:.2f})",
+                flush=True
+            )
     
     @property
     def model_name(self) -> str:
